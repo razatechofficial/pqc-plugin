@@ -6,7 +6,7 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/vault/api"
 	"github.com/hashicorp/vault/sdk/plugin"
-	pqc "github.com/averox/pqc-vault-plugin/backend"
+	pqc "github.com/razatechofficial/pqc-plugin/backend"
 )
 
 func main() {
@@ -28,4 +28,3 @@ func main() {
 		os.Exit(1)
 	}
 }
-
