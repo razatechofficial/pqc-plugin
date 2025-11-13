@@ -12,11 +12,13 @@ A HashiCorp Vault plugin that provides post-quantum cryptographic capabilities f
 ## Supported Algorithms
 
 ### Encryption (Key Encapsulation Mechanism)
+
 - `kyber512` - NIST Level 1 security
 - `kyber768` - NIST Level 3 security (recommended)
 - `kyber1024` - NIST Level 5 security
 
 ### Signing (Digital Signatures)
+
 - `dilithium2` - NIST Level 2 security
 - `dilithium3` - NIST Level 3 security (recommended)
 - `dilithium5` - NIST Level 5 security
@@ -30,11 +32,13 @@ A HashiCorp Vault plugin that provides post-quantum cryptographic capabilities f
 ## Building the Plugin
 
 1. **Install dependencies:**
+
 ```bash
 make deps
 ```
 
 2. **Build for your platform:**
+
 ```bash
 # For current platform
 make build
@@ -54,6 +58,7 @@ The plugin binary will be created as `vault-plugin-pqc` (or platform-specific va
 ### 1. Place the Plugin Binary
 
 Copy the plugin binary to Vault's plugin directory. The default location is typically:
+
 - Linux: `/etc/vault.d/plugins/` or `$VAULT_PLUGIN_DIR`
 - macOS: `$VAULT_PLUGIN_DIR`
 
@@ -78,6 +83,7 @@ make sha256
 Set your Vault environment variables. You can either:
 
 **Option A: Use a .env file (recommended)**
+
 ```bash
 # Copy the example file and update with your credentials
 cp .env.example .env
@@ -85,12 +91,14 @@ cp .env.example .env
 ```
 
 **Option B: Export environment variables directly**
+
 ```bash
 export VAULT_ADDR=https://kms.averox.com
 export VAULT_TOKEN=your-vault-token-here
 ```
 
 Register the plugin with Vault:
+
 ```bash
 # Replace <SHA256_CHECKSUM> with the actual checksum from step 2
 vault write sys/plugins/catalog/secret/pqc-plugin \
@@ -101,6 +109,7 @@ vault write sys/plugins/catalog/secret/pqc-plugin \
 ### 4. Enable the Plugin
 
 Enable the plugin at a mount path:
+
 ```bash
 # Enable at the default path
 vault secrets enable -path=pqc pqc-plugin
@@ -219,6 +228,7 @@ vault write pqc/encrypt/my-pq-key plaintext="..."
 ```
 
 This allows you to:
+
 - Use traditional algorithms via the transit mount
 - Use post-quantum algorithms via the pqc mount
 - Gradually migrate to post-quantum cryptography
@@ -227,7 +237,8 @@ This allows you to:
 
 1. **Key Storage**: Private keys are stored encrypted in Vault's storage backend using seal wrapping (if configured).
 
-2. **Algorithm Selection**: 
+2. **Algorithm Selection**:
+
    - For encryption, Kyber768 is recommended for most use cases (NIST Level 3)
    - For signing, Dilithium3 is recommended for most use cases (NIST Level 3)
 
@@ -240,6 +251,7 @@ This allows you to:
 ### Plugin Not Found
 
 If Vault cannot find the plugin:
+
 1. Verify the plugin binary is in the correct directory
 2. Check that the `command` in the catalog matches the binary name
 3. Ensure the plugin has execute permissions: `chmod +x vault-plugin-pqc`
@@ -247,6 +259,7 @@ If Vault cannot find the plugin:
 ### Permission Denied
 
 Ensure your Vault token has the necessary permissions:
+
 - `sys/plugins/catalog` - to register plugins
 - `sys/mounts` - to enable secrets engines
 - `pqc/*` - to use the plugin operations
@@ -254,6 +267,7 @@ Ensure your Vault token has the necessary permissions:
 ### Build Errors
 
 If you encounter build errors:
+
 1. Ensure Go 1.21+ is installed: `go version`
 2. Update dependencies: `go mod tidy`
 3. Check that all required packages are available
@@ -295,8 +309,3 @@ This plugin is provided as-is for extending HashiCorp Vault Community Edition wi
 - [Cloudflare CIRCL Library](https://github.com/cloudflare/circl)
 - [CRYSTALS-Kyber](https://pq-crystals.org/kyber/)
 - [CRYSTALS-Dilithium](https://pq-crystals.org/dilithium/)
-
-## Support
-
-For issues, questions, or contributions, please refer to the project repository or contact your system administrator.
-

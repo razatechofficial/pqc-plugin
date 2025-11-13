@@ -1,10 +1,11 @@
-module github.com/averox/pqc-vault-plugin
+module github.com/razatechofficial/pqc-plugin
 
 go 1.21
 
 require (
 	github.com/cloudflare/circl v1.3.7
 	github.com/hashicorp/go-hclog v1.6.2
+	github.com/hashicorp/vault/api v1.12.0
 	github.com/hashicorp/vault/sdk v0.11.0
 )
 
@@ -12,6 +13,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.1 // indirect
 	github.com/armon/go-metrics v0.4.1 // indirect
 	github.com/armon/go-radix v1.0.0 // indirect
+	github.com/cenkalti/backoff/v3 v3.2.2 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/docker/distribution v2.8.2+incompatible // indirect
 	github.com/docker/docker v24.0.7+incompatible // indirect
@@ -19,16 +21,19 @@ require (
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/evanphx/json-patch/v5 v5.6.0 // indirect
 	github.com/fatih/color v1.15.0 // indirect
+	github.com/go-jose/go-jose/v3 v3.0.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
+	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-immutable-radix v1.3.1 // indirect
 	github.com/hashicorp/go-kms-wrapping/entropy/v2 v2.0.1 // indirect
 	github.com/hashicorp/go-kms-wrapping/v2 v2.0.14 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/hashicorp/go-plugin v1.6.0 // indirect
 	github.com/hashicorp/go-retryablehttp v0.7.4 // indirect
+	github.com/hashicorp/go-rootcerts v1.0.2 // indirect
 	github.com/hashicorp/go-secure-stdlib/mlock v0.1.3 // indirect
 	github.com/hashicorp/go-secure-stdlib/parseutil v0.1.7 // indirect
 	github.com/hashicorp/go-secure-stdlib/plugincontainer v0.3.0 // indirect
@@ -37,12 +42,13 @@ require (
 	github.com/hashicorp/go-uuid v1.0.3 // indirect
 	github.com/hashicorp/go-version v1.6.0 // indirect
 	github.com/hashicorp/golang-lru v0.5.4 // indirect
-	github.com/hashicorp/vault/api v1.12.0 // indirect
+	github.com/hashicorp/hcl v1.0.1-vault-5 // indirect
 	github.com/hashicorp/yamux v0.1.1 // indirect
 	github.com/joshlf/go-acl v0.0.0-20200411065538-eae00ae38531 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.17 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
+	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/mitchellh/go-testing-interface v1.14.1 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
