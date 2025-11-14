@@ -8,6 +8,7 @@ A HashiCorp Vault plugin that provides post-quantum cryptographic capabilities f
 - **Post-Quantum Signing**: Support for CRYSTALS-Dilithium (Dilithium2, Dilithium3, Dilithium5)
 - **Key Management**: Create, read, update, and delete post-quantum keys
 - **Transit-like Operations**: Encrypt, decrypt, sign, and verify operations similar to Vault's Transit Secrets Engine
+- **Docker Support**: Full Dockerization for easy deployment to VPS
 
 ## Supported Algorithms
 
@@ -23,13 +24,44 @@ A HashiCorp Vault plugin that provides post-quantum cryptographic capabilities f
 - `dilithium3` - NIST Level 3 security (recommended)
 - `dilithium5` - NIST Level 5 security
 
+## Quick Start
+
+### Option 1: Docker Deployment (Recommended for VPS)
+
+```bash
+# Build the plugin with Docker
+make docker-build
+
+# Deploy to your VPS
+export REMOTE_HOST=your-vps-ip
+export REMOTE_USER=vault
+make docker-deploy
+```
+
+See [DOCKER.md](DOCKER.md) for detailed Docker deployment instructions.
+
+### Option 2: Local Build
+
+```bash
+# Install dependencies
+make deps
+
+# Build the plugin
+make build
+
+# Register and enable (see Installation section)
+```
+
 ## Prerequisites
 
-- Go 1.21 or later
+- Go 1.21 or later (for local development)
+- Docker (for Docker builds)
 - HashiCorp Vault (Community or Enterprise Edition)
 - Access to your Vault instance with appropriate permissions
 
 ## Building the Plugin
+
+### Local Build
 
 1. **Install dependencies:**
 
@@ -51,7 +83,14 @@ make build-darwin   # macOS
 make build-all
 ```
 
-The plugin binary will be created as `vault-plugin-pqc` (or platform-specific variant).
+### Docker Build
+
+```bash
+# Build plugin binary using Docker
+make docker-build
+
+# The binary will be in ./build-output/vault-plugin-pqc
+```
 
 ## Installation and Registration
 
@@ -189,6 +228,71 @@ vault write pqc/verify/my-signing-key \
   signature="<SIGNATURE_FROM_SIGN_OPERATION>"
 ```
 
+## Testing
+
+### Unit and Integration Tests
+
+```bash
+# Run all tests
+make test
+
+# Run with coverage
+make test-coverage
+```
+
+### End-to-End Tests
+
+```bash
+# Run automated E2E tests with actual Vault
+make test-e2e
+
+# Run manual interactive tests
+make test-manual
+```
+
+### PQC Verification (Banking Compliance)
+
+Verify that Post-Quantum Cryptography is actually being used by checking key, ciphertext, and signature sizes:
+
+```bash
+# Verify PQC is being used (checks sizes match PQC specifications)
+make verify-pqc
+```
+
+This verification script proves you're using PQC by checking:
+- **Key Size**: Kyber768 keys should be ~1184 bytes (vs RSA-2048: ~256 bytes)
+- **Ciphertext Size**: Kyber768 ciphertexts should be > 1000 bytes (vs AES: ~32 bytes)
+- **Signature Size**: Dilithium3 signatures should be ~3293 bytes (vs ECDSA: ~64 bytes)
+
+If all three tests show ✓✓✓ VERIFIED, you are definitely using Post-Quantum Cryptography!
+
+### Banking Sector Compliance Tests
+
+Run comprehensive banking sector compliance tests:
+
+```bash
+# Run banking sector compliance test suite
+make test-banking
+```
+
+## Docker Deployment
+
+For deploying to a VPS where Vault is running, see the comprehensive [DOCKER.md](DOCKER.md) guide.
+
+Quick commands:
+
+```bash
+# Build plugin with Docker
+make docker-build
+
+# Deploy to VPS
+export REMOTE_HOST=your-vps-ip
+make docker-deploy
+
+# Or use Docker Compose for local testing
+make docker-up
+```
+
 ## API Endpoints
 
 ### Key Management
@@ -236,14 +340,10 @@ This allows you to:
 ## Security Considerations
 
 1. **Key Storage**: Private keys are stored encrypted in Vault's storage backend using seal wrapping (if configured).
-
 2. **Algorithm Selection**:
-
    - For encryption, Kyber768 is recommended for most use cases (NIST Level 3)
    - For signing, Dilithium3 is recommended for most use cases (NIST Level 3)
-
 3. **Hybrid Cryptography**: Consider using hybrid approaches (combining classical and post-quantum algorithms) during the transition period.
-
 4. **Key Rotation**: Implement regular key rotation policies for your post-quantum keys.
 
 ## Troubleshooting
@@ -272,6 +372,10 @@ If you encounter build errors:
 2. Update dependencies: `go mod tidy`
 3. Check that all required packages are available
 
+### Docker Issues
+
+See [DOCKER.md](DOCKER.md) for Docker-specific troubleshooting.
+
 ## Development
 
 ### Project Structure
@@ -282,7 +386,11 @@ pqc-plugin/
 ├── backend/
 │   ├── backend.go       # Backend implementation
 │   ├── paths.go         # API path handlers
-│   └── pqc.go           # Post-quantum crypto operations
+│   ├── pqc.go           # Post-quantum crypto operations
+│   └── *_test.go        # Test files
+├── scripts/             # Utility scripts
+├── docker-compose.yml   # Docker Compose configuration
+├── Dockerfile           # Docker build file
 ├── go.mod               # Go module definition
 ├── Makefile             # Build automation
 └── README.md            # This file
@@ -296,6 +404,9 @@ make test
 
 # Run with verbose output
 go test -v ./...
+
+# Run E2E tests
+make test-e2e
 ```
 
 ## License

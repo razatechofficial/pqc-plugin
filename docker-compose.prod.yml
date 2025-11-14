@@ -1,0 +1,26 @@
+version: '3.8'
+
+# Production docker-compose for deploying plugin to existing Vault
+# This assumes you have Vault running separately and just need the plugin
+
+services:
+  # Build the plugin
+  plugin-builder:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    image: pqc-plugin:latest
+    container_name: pqc-plugin-builder
+    volumes:
+      - ./build-output:/output
+    command: sh -c "cp /vault-plugin-pqc /output/ && chmod 755 /output/vault-plugin-pqc && ls -lh /output/"
+    networks:
+      - pqc-network
+
+networks:
+  pqc-network:
+    driver: bridge
+
+
+
+

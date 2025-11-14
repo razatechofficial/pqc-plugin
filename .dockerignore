@@ -1,0 +1,46 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+vault-plugin-pqc
+vault-plugin-pqc-*
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test files
+*.test
+*.out
+coverage.out
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation (optional - uncomment if you want to exclude)
+# *.md
+# docs/
+
+# Scripts (keep these for now)
+# scripts/
+
+# Vault data
+vault-data/
+vault-logs/
+vault-config/
+
+# Environment files
+.env
+.env.local
+
+
+
+

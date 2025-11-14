@@ -35,4 +35,21 @@ Thumbs.db
 # Environment files
 .env
 .env.local
+*.env.local
+.env.*.local
+
+# Docker build outputs
+build-output/
+vault-data/
+vault-logs/
+vault-config/
+
+# Docker volumes
+*.log
+
+# Ignore all markdown files
+*.md
+
+# But keep README.md
+!README.md
 
