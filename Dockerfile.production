@@ -1,0 +1,36 @@
+# Production Dockerfile for Post-Quantum Cryptography Vault Plugin
+# This builds just the plugin binary for use with an existing Vault installation
+
+FROM golang:1.21-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache git make
+
+# Set working directory
+WORKDIR /build
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the plugin for Linux
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -ldflags '-w -s' -o vault-plugin-pqc ./main.go
+
+# Verify the binary
+RUN ls -lh vault-plugin-pqc && file vault-plugin-pqc
+
+# Stage 2: Minimal output image
+FROM scratch
+
+# Copy only the binary
+COPY --from=builder /build/vault-plugin-pqc /vault-plugin-pqc
+
+# The binary is the entrypoint
+ENTRYPOINT ["/vault-plugin-pqc"]
+
+
+
+
