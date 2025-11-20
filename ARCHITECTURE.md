@@ -1,252 +1,232 @@
-# Architecture and Design
+# PQC Plugin Architecture & Execution Flow
 
 ## Overview
 
-This Post-Quantum Cryptography (PQC) Vault Plugin extends HashiCorp Vault Community Edition with post-quantum cryptographic capabilities without modifying Vault's core code. It implements a custom secrets engine that provides encryption, decryption, signing, and verification using NIST-standardized post-quantum algorithms.
+This document explains where the Post-Quantum Cryptography code runs and how everything connects together.
 
-## How It Works
+## Code Location
 
-### Plugin Architecture
-
-Vault uses a plugin system that allows external binaries to extend functionality. The plugin:
-
-1. **Implements Vault's Plugin Interface**: Uses the `logical.Backend` interface from Vault's SDK
-2. **Runs as Separate Process**: Vault spawns the plugin as a separate process and communicates via gRPC
-3. **Mounts as Secrets Engine**: The plugin appears as a secrets engine at a mount path (e.g., `/v1/pqc/`)
-
-### Key Components
+### 1. **Source Code (Your Local Machine)**
+The PQC implementation code is in these files:
 
 ```
-┌─────────────────────────────────────────┐
-│         HashiCorp Vault                 │
-│  ┌───────────────────────────────────┐  │
-│  │   Plugin Manager                  │  │
-│  │   - Registers plugins             │  │
-│  │   - Manages plugin lifecycle     │  │
-│  └──────────────┬────────────────────┘  │
-│                 │ gRPC                  │
-│  ┌──────────────▼────────────────────┐  │
-│  │   Post-Quantum Plugin             │  │
-│  │   (vault-plugin-pqc)              │  │
-│  │                                    │  │
-│  │  ┌──────────────────────────────┐ │  │
-│  │  │  Backend (backend.go)        │ │  │
-│  │  │  - Routes requests           │ │  │
-│  │  │  - Manages lifecycle         │ │  │
-│  │  └──────────┬───────────────────┘ │  │
-│  │             │                      │  │
-│  │  ┌──────────▼───────────────────┐ │  │
-│  │  │  Path Handlers (paths.go)    │ │  │
-│  │  │  - /keys/*                   │ │  │
-│  │  │  - /encrypt/:name            │ │  │
-│  │  │  - /decrypt/:name            │ │  │
-│  │  │  - /sign/:name               │ │  │
-│  │  │  - /verify/:name             │ │  │
-│  │  └──────────┬───────────────────┘ │  │
-│  │             │                      │  │
-│  │  ┌──────────▼───────────────────┐ │  │
-│  │  │  PQC Operations (pqc.go)     │ │  │
-│  │  │  - Key generation            │ │  │
-│  │  │  - Encryption/Decryption     │ │  │
-│  │  │  - Signing/Verification      │ │  │
-│  │  └──────────────────────────────┘ │  │
-│  └────────────────────────────────────┘  │
-└──────────────────────────────────────────┘
-         │
-         │ Uses
-         ▼
-┌─────────────────────────────────────────┐
-│   Cloudflare CIRCL Library              │
-│   - CRYSTALS-Kyber (KEM)                │
-│   - CRYSTALS-Dilithium (Signatures)     │
-└─────────────────────────────────────────┘
+pqc-plugin/
+├── main.go                    # Plugin entry point - starts the plugin server
+├── backend/
+│   ├── backend.go            # Vault backend interface implementation
+│   ├── paths.go              # API route handlers (keys/, encrypt/, decrypt/, sign/, verify/)
+│   └── pqc.go                # ⭐ ACTUAL PQC CRYPTO CODE HERE ⭐
+│                              #   - generateEncryptionKey() - Kyber key generation
+│                              #   - encryptData() - Kyber encryption
+│                              #   - decryptData() - Kyber decryption
+│                              #   - generateSigningKey() - Dilithium key generation
+│                              #   - signData() - Dilithium signing
+│                              #   - verifySignature() - Dilithium verification
 ```
 
-## Data Flow
+**Key File: `backend/pqc.go`** - This is where the actual post-quantum cryptographic operations happen using the Cloudflare CIRCL library.
 
-### Key Generation
-
-```
-Client Request → Vault → Plugin → CIRCL Library
-                                    ↓
-                              Generate Key Pair
-                                    ↓
-                              Store in Vault
-                                    ↓
-                              Return Public Key
-```
-
-### Encryption Flow
+### 2. **Compiled Binary (Remote Vault Server)**
+When you build the plugin, it creates a binary:
 
 ```
-1. Client sends plaintext + key name
-2. Plugin retrieves key from Vault storage
-3. Plugin uses CIRCL Kyber to:
-   - Encapsulate shared secret (KEM)
-   - Encrypt plaintext with shared secret
-4. Returns ciphertext to client
+vault-plugin-pqc  (Linux binary)
 ```
 
-### Decryption Flow
-
+This binary is deployed to your remote Vault server at:
 ```
-1. Client sends ciphertext + key name
-2. Plugin retrieves key from Vault storage
-3. Plugin uses CIRCL Kyber to:
-   - Decapsulate shared secret
-   - Decrypt ciphertext
-4. Returns plaintext to client
+/etc/vault.d/plugins/vault-plugin-pqc
 ```
 
-## Security Considerations
+## Execution Flow
 
-### Key Storage
-
-- **Private keys** are stored in Vault's encrypted storage backend
-- Keys can be seal-wrapped (if configured) for additional protection
-- Keys are never exposed in API responses (only public keys)
-
-### Algorithm Selection
-
-The plugin supports multiple security levels:
-
-- **Level 1-2**: Suitable for testing and low-security applications
-- **Level 3**: Recommended for most production use (Kyber768, Dilithium3)
-- **Level 5**: Highest security, larger key sizes (Kyber1024, Dilithium5)
-
-### Encryption Implementation
-
-**Current Implementation**: Uses XOR with shared secret (simplified for demonstration)
-
-**Production Recommendation**: Use a proper AEAD cipher like AES-GCM with the shared secret:
-
-```go
-// Pseudo-code for production
-sharedSecret := kem.Encapsulate(publicKey)
-cipher := aes.NewGCM(deriveKey(sharedSecret))
-ciphertext := cipher.Seal(nonce, nonce, plaintext, nil)
-```
-
-## Integration Points
-
-### With Existing Transit Mount
-
-The plugin can coexist with Vault's built-in transit mount:
+Here's the complete flow when you run the banking test:
 
 ```
-/v1/transit/encrypt/my-key     → Traditional algorithms
-/v1/pqc/encrypt/my-pq-key      → Post-quantum algorithms
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. YOUR LOCAL MACHINE                                           │
+│    ┌──────────────────────────────────────────────────────┐    │
+│    │  scripts/banking-test.sh                             │    │
+│    │  (Runs on your Mac)                                  │    │
+│    │                                                       │    │
+│    │  vault_cmd() → SSH to remote server                  │    │
+│    └──────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            │ SSH Connection
+                            │ (104.237.11.39)
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 2. REMOTE VAULT SERVER (104.237.11.39)                         │
+│    ┌──────────────────────────────────────────────────────┐    │
+│    │  Vault CLI Command                                   │    │
+│    │  vault write pqc/keys/my-key ...                     │    │
+│    └──────────────────────────────────────────────────────┘    │
+│                            │                                    │
+│                            │ HTTP/API Request                   │
+│                            ▼                                    │
+│    ┌──────────────────────────────────────────────────────┐    │
+│    │  HashiCorp Vault Server                              │    │
+│    │  (Running on port 8200)                              │    │
+│    │                                                       │    │
+│    │  1. Receives API request                             │    │
+│    │  2. Routes to "pqc" mount                            │    │
+│    │  3. Loads plugin: vault-plugin-pqc                   │    │
+│    └──────────────────────────────────────────────────────┘    │
+│                            │                                    │
+│                            │ Plugin IPC (gRPC)                  │
+│                            ▼                                    │
+│    ┌──────────────────────────────────────────────────────┐    │
+│    │  vault-plugin-pqc Binary                             │    │
+│    │  (Located at /etc/vault.d/plugins/vault-plugin-pqc)  │    │
+│    │                                                       │    │
+│    │  This binary contains:                               │    │
+│    │  • main.go code                                      │    │
+│    │  • backend/backend.go                                │    │
+│    │  • backend/paths.go                                  │    │
+│    │  • backend/pqc.go ⭐ (PQC crypto code)               │    │
+│    │  • Cloudflare CIRCL library (compiled in)            │    │
+│    └──────────────────────────────────────────────────────┘    │
+│                            │                                    │
+│                            │ Function Call                      │
+│                            ▼                                    │
+│    ┌──────────────────────────────────────────────────────┐    │
+│    │  backend/pqc.go Functions                            │    │
+│    │                                                       │    │
+│    │  generateEncryptionKey()                             │    │
+│    │    → kyber768.Scheme().GenerateKeyPair()             │    │
+│    │                                                       │    │
+│    │  encryptData()                                       │    │
+│    │    → scheme.Encapsulate()                            │    │
+│    │                                                       │    │
+│    │  signData()                                          │    │
+│    │    → dilithium.Mode().Sign()                         │    │
+│    └──────────────────────────────────────────────────────┘    │
+│                            │                                    │
+│                            │ Library Call                       │
+│                            ▼                                    │
+│    ┌──────────────────────────────────────────────────────┐    │
+│    │  Cloudflare CIRCL Library                            │    │
+│    │  (Compiled into the binary)                          │    │
+│    │                                                       │    │
+│    │  • kyber512, kyber768, kyber1024                     │    │
+│    │  • dilithium2, dilithium3, dilithium5                │    │
+│    │                                                       │    │
+│    │  ⭐ ACTUAL POST-QUANTUM ALGORITHMS ⭐                │    │
+│    └──────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-This allows:
-- Gradual migration to post-quantum cryptography
-- Hybrid approaches (encrypt with both)
-- Backward compatibility
+## Step-by-Step Example
 
-### With Vault Policies
-
-Standard Vault policies apply:
-
-```hcl
-# Allow all PQC operations
-path "pqc/*" {
-  capabilities = ["create", "read", "update", "delete", "list"]
-}
-
-# Allow only encryption/decryption
-path "pqc/encrypt/*" {
-  capabilities = ["update"]
-}
-path "pqc/decrypt/*" {
-  capabilities = ["update"]
-}
+When you run:
+```bash
+make test-banking
 ```
 
-## Storage Schema
+Here's what happens:
 
-Keys are stored in Vault's storage backend with the following structure:
-
-```
-keys/
-  └── <key-name>/
-      └── {
-            "name": "my-key",
-            "algorithm": "kyber768",
-            "key_type": "encryption",
-            "public_key": <base64-encoded>,
-            "private_key": <base64-encoded>,
-            "version": 1
-          }
+### Step 1: Test Script Runs Locally
+```bash
+# scripts/banking-test.sh runs on your Mac
+vault_cmd "vault write pqc/keys/customer-key algorithm=kyber768 key_type=encryption"
 ```
 
-## Limitations and Future Enhancements
+### Step 2: SSH to Remote Server
+```bash
+# The script SSHs to 104.237.11.39 and runs:
+# Note: VAULT_TOKEN must be set as an environment variable before running the script
+export VAULT_ADDR=https://kms.averox.com
+export VAULT_TOKEN=${VAULT_TOKEN}  # Token is read from environment
+vault write pqc/keys/customer-key algorithm=kyber768 key_type=encryption
+```
 
-### Current Limitations
+### Step 3: Vault Receives Request
+- Vault server receives the HTTP request
+- Routes it to the `pqc` mount path
+- Identifies that `pqc` is handled by the `pqc-plugin` plugin
 
-1. **Encryption**: Uses simplified XOR (should use AEAD in production)
-2. **Key Rotation**: Manual process (no automatic rotation)
-3. **Key Versioning**: Basic version tracking
-4. **Context Binding**: No additional authenticated data (AAD) support
+### Step 4: Vault Loads Plugin
+- Vault looks up the plugin in its catalog
+- Finds: `command="vault-plugin-pqc"` in `/etc/vault.d/plugins/`
+- Spawns the plugin binary as a subprocess
+- Establishes gRPC communication channel
 
-### Potential Enhancements
+### Step 5: Plugin Processes Request
+The `vault-plugin-pqc` binary:
+1. Receives the request via gRPC
+2. Routes to `backend/paths.go` → `pathKeyCreate()`
+3. Calls `backend/pqc.go` → `generateEncryptionKey("kyber768")`
+4. Executes:
+   ```go
+   scheme := kyber768.Scheme()
+   publicKey, privateKey, err := scheme.GenerateKeyPair()
+   ```
+5. Returns the key pair to Vault
+6. Vault stores the keys in its storage backend
 
-1. **Hybrid Cryptography**: Combine classical + post-quantum algorithms
-2. **Key Rotation**: Automatic key rotation policies
-3. **Key Derivation**: Support for key derivation functions
-4. **Batch Operations**: Encrypt/decrypt multiple items
-5. **Key Import/Export**: Import keys from external sources
-6. **Performance Optimization**: Caching and connection pooling
+### Step 6: Response Returns
+- Plugin → Vault → Vault CLI → SSH → Your test script
+- Test script receives: "Success! Data written to: pqc/keys/customer-key"
 
-## Testing Strategy
+## Where is the Code Actually Running?
 
-### Unit Tests
+**Answer: The PQC code runs on the remote Vault server (104.237.11.39) inside the `vault-plugin-pqc` binary process.**
 
-- Test key generation for each algorithm
-- Test encryption/decryption round-trips
-- Test signing/verification
-- Test error handling
+The binary is a compiled Go program that includes:
+- All your source code (`main.go`, `backend/*.go`)
+- The Cloudflare CIRCL library (compiled in)
+- All dependencies (Vault SDK, etc.)
 
-### Integration Tests
+## Verification
 
-- Test with actual Vault instance
-- Test plugin registration and mounting
-- Test API endpoints
-- Test with different Vault policies
+You can verify the plugin is running on the remote server:
 
-### Security Tests
+```bash
+# SSH to the server
+ssh root@104.237.11.39
 
-- Verify keys are never exposed
-- Test with invalid inputs
-- Test key size validation
-- Test algorithm parameter validation
+# Check if plugin binary exists
+ls -lh /etc/vault.d/plugins/vault-plugin-pqc
 
-## Deployment Considerations
+# Check if Vault has loaded the plugin
+vault read sys/plugins/catalog/secret/pqc-plugin
 
-### Plugin Binary
+# Check running processes (plugin runs as subprocess of Vault)
+ps aux | grep vault-plugin-pqc
+```
 
-- Must be compiled for the same OS/architecture as Vault
-- Must be placed in Vault's plugin directory
-- Must have execute permissions
-- SHA256 checksum must match registration
+## Key Points
 
-### Vault Configuration
+1. **Source Code**: Lives in `backend/pqc.go` on your local machine
+2. **Compiled Binary**: `vault-plugin-pqc` deployed to remote server
+3. **Execution**: Binary runs on remote server as Vault subprocess
+4. **Test Script**: Only sends commands via SSH, doesn't execute crypto locally
+5. **PQC Algorithms**: Actually run on remote server using Cloudflare CIRCL library
 
-- Plugin directory must be configured
-- Sufficient permissions for plugin execution
-- Network access if using remote storage
+## Why This Architecture?
 
-### Monitoring
+- **Security**: Private keys never leave the Vault server
+- **Performance**: Crypto operations happen close to Vault storage
+- **Isolation**: Plugin runs in separate process from Vault core
+- **Scalability**: Vault can manage multiple plugin instances
 
-- Monitor plugin process health
-- Log cryptographic operations (without sensitive data)
-- Track key usage and rotation
-- Monitor performance metrics
+## Summary
 
-## References
+```
+Your Test Script (Local)
+    ↓ SSH
+Remote Vault CLI
+    ↓ HTTP API
+Vault Server (Remote)
+    ↓ gRPC/Plugin Protocol
+vault-plugin-pqc Binary (Remote)
+    ↓ Function Calls
+backend/pqc.go Code (in binary)
+    ↓ Library Calls
+Cloudflare CIRCL PQC Library (in binary)
+    ↓
+⭐ POST-QUANTUM CRYPTOGRAPHY HAPPENS HERE ⭐
+```
 
-- [Vault Plugin Development](https://developer.hashicorp.com/vault/docs/internals/plugins)
-- [NIST PQC Standards](https://csrc.nist.gov/projects/post-quantum-cryptography)
-- [Cloudflare CIRCL](https://github.com/cloudflare/circl)
-- [CRYSTALS-Kyber](https://pq-crystals.org/kyber/)
-- [CRYSTALS-Dilithium](https://pq-crystals.org/dilithium/)
-
+The actual PQC cryptographic operations happen **on the remote Vault server** inside the `vault-plugin-pqc` binary process, which contains your compiled Go code and the Cloudflare CIRCL post-quantum cryptography library.

@@ -12,7 +12,11 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 VAULT_ADDR="${VAULT_ADDR:-https://kms.averox.com}"
-VAULT_TOKEN="${VAULT_TOKEN:-hvs.Si4gMDMP1a6MwYqpIGiGJCic}"
+if [ -z "$VAULT_TOKEN" ]; then
+    echo "Error: VAULT_TOKEN environment variable is not set"
+    echo "Please set it with: export VAULT_TOKEN=your_token_here"
+    exit 1
+fi
 MOUNT_PATH="pqc"
 
 export VAULT_ADDR

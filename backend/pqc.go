@@ -6,9 +6,9 @@ import (
 	"fmt"
 
 	"github.com/cloudflare/circl/kem"
+	"github.com/cloudflare/circl/kem/kyber/kyber1024"
 	"github.com/cloudflare/circl/kem/kyber/kyber512"
 	"github.com/cloudflare/circl/kem/kyber/kyber768"
-	"github.com/cloudflare/circl/kem/kyber/kyber1024"
 	"github.com/cloudflare/circl/sign/dilithium"
 )
 
@@ -204,3 +204,87 @@ func verifySignature(data []byte, signature []byte, publicKeyBytes []byte, algor
 	return isValid, nil
 }
 
+// KEK (Key Encryption Key) functions for encrypting private keys with PQC
+
+// generateKEK generates a PQC KEK for encrypting private keys
+// Uses Kyber1024 for maximum security as KEK
+func generateKEK() ([]byte, []byte, error) {
+	scheme := kyber1024.Scheme()
+	publicKey, privateKey, err := scheme.GenerateKeyPair()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	pubKeyBytes, err := publicKey.MarshalBinary()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	privKeyBytes, err := privateKey.MarshalBinary()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return pubKeyBytes, privKeyBytes, nil
+}
+
+// encryptPrivateKeyWithKEK encrypts a private key using a PQC KEK
+func encryptPrivateKeyWithKEK(privateKey []byte, kekPublicKey []byte) ([]byte, error) {
+	scheme := kyber1024.Scheme()
+
+	// Unmarshal KEK public key
+	kekPubKey, err := scheme.UnmarshalBinaryPublicKey(kekPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal KEK public key: %w", err)
+	}
+
+	// Encapsulate shared secret using KEK
+	ciphertext, sharedSecret, err := scheme.Encapsulate(kekPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encapsulate with KEK: %w", err)
+	}
+
+	// Encrypt private key with shared secret (XOR for simplicity, can be enhanced with AEAD)
+	encrypted := make([]byte, len(privateKey))
+	for i := range privateKey {
+		encrypted[i] = privateKey[i] ^ sharedSecret[i%len(sharedSecret)]
+	}
+
+	// Combine KEM ciphertext and encrypted private key
+	result := append(ciphertext, encrypted...)
+	return result, nil
+}
+
+// decryptPrivateKeyWithKEK decrypts a private key using a PQC KEK
+func decryptPrivateKeyWithKEK(encryptedPrivateKey []byte, kekPrivateKey []byte) ([]byte, error) {
+	scheme := kyber1024.Scheme()
+
+	// Unmarshal KEK private key
+	kekPrivKey, err := scheme.UnmarshalBinaryPrivateKey(kekPrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal KEK private key: %w", err)
+	}
+
+	// Extract KEM ciphertext and encrypted private key
+	ciphertextSize := scheme.CiphertextSize()
+	if len(encryptedPrivateKey) < ciphertextSize {
+		return nil, errors.New("invalid encrypted private key length")
+	}
+
+	ciphertext := encryptedPrivateKey[:ciphertextSize]
+	encrypted := encryptedPrivateKey[ciphertextSize:]
+
+	// Decapsulate shared secret
+	sharedSecret, err := scheme.Decapsulate(kekPrivKey, ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decapsulate with KEK: %w", err)
+	}
+
+	// Decrypt private key
+	privateKey := make([]byte, len(encrypted))
+	for i := range encrypted {
+		privateKey[i] = encrypted[i] ^ sharedSecret[i%len(sharedSecret)]
+	}
+
+	return privateKey, nil
+}

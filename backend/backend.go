@@ -36,14 +36,18 @@ func Backend(conf *logical.BackendConfig) *PostQuantumBackend {
 		PathsSpecial: &logical.Paths{
 			SealWrapStorage: []string{
 				"keys/",
+				"kek/", // KEK is also seal-wrapped for additional protection
 			},
 		},
 		Paths: framework.PathAppend(
 			keyPaths(&b),
+			kekPaths(&b),
+			datakeyPaths(&b),
 			encryptPaths(&b),
 			decryptPaths(&b),
 			signPaths(&b),
 			verifyPaths(&b),
+			rewrapPaths(&b),
 		),
 		Secrets: []*framework.Secret{},
 	}
@@ -61,4 +65,3 @@ func (b *PostQuantumBackend) Initialize(ctx context.Context, req *logical.Initia
 	b.logger.Info("Initializing post-quantum backend")
 	return nil
 }
-

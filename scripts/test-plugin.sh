@@ -14,7 +14,11 @@ NC='\033[0m' # No Color
 
 # Configuration
 VAULT_ADDR="${VAULT_ADDR:-https://kms.averox.com}"
-VAULT_TOKEN="${VAULT_TOKEN:-hvs.Si4gMDMP1a6MwYqpIGiGJCic}"
+if [ -z "$VAULT_TOKEN" ]; then
+    echo "Error: VAULT_TOKEN environment variable is not set"
+    echo "Please set it with: export VAULT_TOKEN=your_token_here"
+    exit 1
+fi
 PLUGIN_NAME="pqc-plugin"
 MOUNT_PATH="pqc"
 PLUGIN_BINARY="./vault-plugin-pqc"

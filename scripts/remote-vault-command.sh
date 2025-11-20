@@ -10,7 +10,11 @@ REMOTE_HOST="${REMOTE_HOST:-104.237.11.39}"
 REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_PASSWORD="${REMOTE_PASSWORD:-MaidlyAbregeRubricNeakes}"
 VAULT_ADDR="${VAULT_ADDR:-https://kms.averox.com}"
-VAULT_TOKEN="${VAULT_TOKEN:-hvs.Si4gMDMP1a6MwYqpIGiGJCic}"
+if [ -z "$VAULT_TOKEN" ]; then
+    echo "Error: VAULT_TOKEN environment variable is not set"
+    echo "Please set it with: export VAULT_TOKEN=your_token_here"
+    exit 1
+fi
 
 # Get command from arguments
 if [ $# -eq 0 ]; then
