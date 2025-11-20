@@ -22,6 +22,17 @@ type KeyData struct {
 	Version          int    `json:"version"`
 }
 
+// KeyMetadata tracks key versions and rotation information
+type KeyMetadata struct {
+	Name              string `json:"name"`
+	Algorithm         string `json:"algorithm"`
+	KeyType           string `json:"key_type"`
+	LatestVersion     int    `json:"latest_version"`
+	MinVersion        int    `json:"min_version"`         // Minimum version to keep
+	MinDecryptVersion int    `json:"min_decrypt_version"` // Minimum version for decryption
+	Versions          []int  `json:"versions"`            // List of all versions
+}
+
 // KEKData represents the Key Encryption Key (stored as a named key)
 // KEKs are just regular keys with key_type="kek"
 type KEKData struct {
@@ -92,6 +103,28 @@ func keyPaths(b *PostQuantumBackend) []*framework.Path {
 			},
 			HelpSynopsis:    "Manage post-quantum keys",
 			HelpDescription: "Create, read, update, or delete post-quantum cryptographic keys",
+		},
+		{
+			Pattern: "keys/" + framework.GenericNameRegex("name") + "/rotate",
+			DisplayAttrs: &framework.DisplayAttributes{
+				OperationPrefix: "pqc",
+				OperationVerb:   "rotate",
+				OperationSuffix: "key",
+			},
+			Fields: map[string]*framework.FieldSchema{
+				"name": {
+					Type:        framework.TypeString,
+					Description: "Name of the key to rotate",
+					Required:    true,
+				},
+			},
+			Operations: map[logical.Operation]framework.OperationHandler{
+				logical.UpdateOperation: &framework.PathOperation{
+					Callback: b.pathKeyRotate,
+				},
+			},
+			HelpSynopsis:    "Rotate a post-quantum key",
+			HelpDescription: "Creates a new version of the key while keeping old versions for decryption",
 		},
 	}
 }
@@ -407,11 +440,113 @@ func (b *PostQuantumBackend) getPrivateKey(ctx context.Context, storage logical.
 	return privateKey, nil
 }
 
+// getKeyMetadata retrieves key metadata
+func (b *PostQuantumBackend) getKeyMetadata(ctx context.Context, storage logical.Storage, name string) (*KeyMetadata, error) {
+	path := fmt.Sprintf("keys/%s/metadata", name)
+	entry, err := storage.Get(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if entry == nil {
+		return nil, nil
+	}
+
+	var metadata KeyMetadata
+	if err := json.Unmarshal(entry.Value, &metadata); err != nil {
+		return nil, err
+	}
+	return &metadata, nil
+}
+
+// saveKeyMetadata saves key metadata
+func (b *PostQuantumBackend) saveKeyMetadata(ctx context.Context, storage logical.Storage, metadata *KeyMetadata) error {
+	path := fmt.Sprintf("keys/%s/metadata", metadata.Name)
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+
+	entry := &logical.StorageEntry{
+		Key:   path,
+		Value: metadataJSON,
+	}
+	return storage.Put(ctx, entry)
+}
+
+// getKeyVersion retrieves a specific key version
+func (b *PostQuantumBackend) getKeyVersion(ctx context.Context, storage logical.Storage, name string, version int) (*KeyData, error) {
+	path := fmt.Sprintf("keys/%s/versions/%d", name, version)
+	entry, err := storage.Get(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if entry == nil {
+		return nil, fmt.Errorf("key version %d not found", version)
+	}
+
+	var keyData KeyData
+	if err := json.Unmarshal(entry.Value, &keyData); err != nil {
+		return nil, err
+	}
+	return &keyData, nil
+}
+
+// saveKeyVersion saves a specific key version
+func (b *PostQuantumBackend) saveKeyVersion(ctx context.Context, storage logical.Storage, keyData *KeyData) error {
+	path := fmt.Sprintf("keys/%s/versions/%d", keyData.Name, keyData.Version)
+	keyJSON, err := json.Marshal(keyData)
+	if err != nil {
+		return err
+	}
+
+	entry := &logical.StorageEntry{
+		Key:   path,
+		Value: keyJSON,
+	}
+	return storage.Put(ctx, entry)
+}
+
+// getLatestKeyVersion gets the latest version of a key
+func (b *PostQuantumBackend) getLatestKeyVersion(ctx context.Context, storage logical.Storage, name string) (*KeyData, error) {
+	metadata, err := b.getKeyMetadata(ctx, storage, name)
+	if err != nil {
+		return nil, err
+	}
+	if metadata == nil {
+		// Backward compatibility: try old format
+		oldPath := fmt.Sprintf("keys/%s", name)
+		entry, err := storage.Get(ctx, oldPath)
+		if err != nil {
+			return nil, err
+		}
+		if entry == nil {
+			return nil, fmt.Errorf("key not found")
+		}
+		var keyData KeyData
+		if err := json.Unmarshal(entry.Value, &keyData); err != nil {
+			return nil, err
+		}
+		return &keyData, nil
+	}
+
+	return b.getKeyVersion(ctx, storage, name, metadata.LatestVersion)
+}
+
 // pathKeyExistenceCheck checks if a key exists
 func (b *PostQuantumBackend) pathKeyExistenceCheck(ctx context.Context, req *logical.Request, d *framework.FieldData) (bool, error) {
 	name := d.Get("name").(string)
-	path := fmt.Sprintf("keys/%s", name)
 
+	// Check new format (metadata)
+	metadata, err := b.getKeyMetadata(ctx, req.Storage, name)
+	if err != nil {
+		return false, err
+	}
+	if metadata != nil {
+		return true, nil
+	}
+
+	// Check old format (backward compatibility)
+	path := fmt.Sprintf("keys/%s", name)
 	entry, err := req.Storage.Get(ctx, path)
 	if err != nil {
 		return false, err
@@ -423,8 +558,36 @@ func (b *PostQuantumBackend) pathKeyExistenceCheck(ctx context.Context, req *log
 // pathKeyRead reads a key
 func (b *PostQuantumBackend) pathKeyRead(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
 	name := d.Get("name").(string)
-	path := fmt.Sprintf("keys/%s", name)
 
+	// Try to get metadata (new format)
+	metadata, err := b.getKeyMetadata(ctx, req.Storage, name)
+	if err != nil {
+		return nil, err
+	}
+
+	if metadata != nil {
+		// Get latest version
+		keyData, err := b.getKeyVersion(ctx, req.Storage, name, metadata.LatestVersion)
+		if err != nil {
+			return nil, err
+		}
+
+		return &logical.Response{
+			Data: map[string]interface{}{
+				"name":                keyData.Name,
+				"algorithm":           keyData.Algorithm,
+				"key_type":            keyData.KeyType,
+				"public_key":          base64.StdEncoding.EncodeToString(keyData.PublicKey),
+				"version":             keyData.Version,
+				"latest_version":      metadata.LatestVersion,
+				"min_version":         metadata.MinVersion,
+				"min_decrypt_version": metadata.MinDecryptVersion,
+			},
+		}, nil
+	}
+
+	// Backward compatibility: try old format
+	path := fmt.Sprintf("keys/%s", name)
 	entry, err := req.Storage.Get(ctx, path)
 	if err != nil {
 		return nil, err
@@ -508,19 +671,48 @@ func (b *PostQuantumBackend) pathKeyCreate(ctx context.Context, req *logical.Req
 	// Don't store plain private key
 	keyData.PrivateKey = nil
 
-	// Store the key (with encrypted private key)
-	keyJSON, err := json.Marshal(keyData)
+	// Check if this is an update to existing key (migrate to versioned format)
+	existingMetadata, err := b.getKeyMetadata(ctx, req.Storage, name)
 	if err != nil {
 		return nil, err
 	}
 
-	entry = &logical.StorageEntry{
-		Key:   path,
-		Value: keyJSON,
-	}
+	if existingMetadata != nil {
+		// Key exists with versioning - create new version
+		keyData.Version = existingMetadata.LatestVersion + 1
+		existingMetadata.LatestVersion = keyData.Version
+		existingMetadata.Versions = append(existingMetadata.Versions, keyData.Version)
 
-	if err := req.Storage.Put(ctx, entry); err != nil {
-		return nil, err
+		// Save new version
+		if err := b.saveKeyVersion(ctx, req.Storage, &keyData); err != nil {
+			return nil, err
+		}
+
+		// Update metadata
+		if err := b.saveKeyMetadata(ctx, req.Storage, existingMetadata); err != nil {
+			return nil, err
+		}
+	} else {
+		// New key - create metadata and version 1
+		metadata := &KeyMetadata{
+			Name:              name,
+			Algorithm:         algorithm,
+			KeyType:           keyType,
+			LatestVersion:     1,
+			MinVersion:        1,
+			MinDecryptVersion: 1,
+			Versions:          []int{1},
+		}
+
+		// Save version 1
+		if err := b.saveKeyVersion(ctx, req.Storage, &keyData); err != nil {
+			return nil, err
+		}
+
+		// Save metadata
+		if err := b.saveKeyMetadata(ctx, req.Storage, metadata); err != nil {
+			return nil, err
+		}
 	}
 
 	return &logical.Response{
@@ -534,13 +726,147 @@ func (b *PostQuantumBackend) pathKeyCreate(ctx context.Context, req *logical.Req
 	}, nil
 }
 
+// pathKeyRotate rotates a key by creating a new version
+func (b *PostQuantumBackend) pathKeyRotate(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	name := d.Get("name").(string)
+
+	// Get metadata
+	metadata, err := b.getKeyMetadata(ctx, req.Storage, name)
+	if err != nil {
+		return nil, err
+	}
+	if metadata == nil {
+		// Try to migrate old format key
+		oldPath := fmt.Sprintf("keys/%s", name)
+		entry, err := req.Storage.Get(ctx, oldPath)
+		if err != nil {
+			return nil, err
+		}
+		if entry == nil {
+			return nil, fmt.Errorf("key not found")
+		}
+
+		var oldKeyData KeyData
+		if err := json.Unmarshal(entry.Value, &oldKeyData); err != nil {
+			return nil, err
+		}
+
+		// Migrate to versioned format
+		metadata = &KeyMetadata{
+			Name:              name,
+			Algorithm:         oldKeyData.Algorithm,
+			KeyType:           oldKeyData.KeyType,
+			LatestVersion:     1,
+			MinVersion:        1,
+			MinDecryptVersion: 1,
+			Versions:          []int{1},
+		}
+
+		oldKeyData.Version = 1
+		if err := b.saveKeyVersion(ctx, req.Storage, &oldKeyData); err != nil {
+			return nil, err
+		}
+		if err := b.saveKeyMetadata(ctx, req.Storage, metadata); err != nil {
+			return nil, err
+		}
+
+		// Delete old format
+		req.Storage.Delete(ctx, oldPath)
+	}
+
+	// Get latest version to copy algorithm and key type
+	latestKey, err := b.getKeyVersion(ctx, req.Storage, name, metadata.LatestVersion)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get or create master KEK
+	kekData, err := b.getOrCreateMasterKEK(ctx, req.Storage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get KEK: %w", err)
+	}
+
+	// Generate new key pair
+	var newKeyData KeyData
+	newKeyData.Name = name
+	newKeyData.Algorithm = latestKey.Algorithm
+	newKeyData.KeyType = latestKey.KeyType
+	newKeyData.Version = metadata.LatestVersion + 1
+
+	var privateKey []byte
+	if newKeyData.KeyType == "encryption" {
+		publicKey, privKey, err := generateEncryptionKey(newKeyData.Algorithm)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate encryption key: %w", err)
+		}
+		newKeyData.PublicKey = publicKey
+		privateKey = privKey
+	} else if newKeyData.KeyType == "signing" {
+		publicKey, privKey, err := generateSigningKey(newKeyData.Algorithm)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate signing key: %w", err)
+		}
+		newKeyData.PublicKey = publicKey
+		privateKey = privKey
+	}
+
+	// Encrypt private key
+	encryptedPrivKey, err := encryptPrivateKeyWithKEK(privateKey, kekData.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt private key with KEK: %w", err)
+	}
+	newKeyData.EncryptedPrivKey = encryptedPrivKey
+	newKeyData.PrivateKey = nil
+
+	// Save new version
+	if err := b.saveKeyVersion(ctx, req.Storage, &newKeyData); err != nil {
+		return nil, err
+	}
+
+	// Update metadata
+	metadata.LatestVersion = newKeyData.Version
+	metadata.Versions = append(metadata.Versions, newKeyData.Version)
+	if err := b.saveKeyMetadata(ctx, req.Storage, metadata); err != nil {
+		return nil, err
+	}
+
+	return &logical.Response{
+		Data: map[string]interface{}{
+			"name":           newKeyData.Name,
+			"algorithm":      newKeyData.Algorithm,
+			"key_type":       newKeyData.KeyType,
+			"public_key":     base64.StdEncoding.EncodeToString(newKeyData.PublicKey),
+			"version":        newKeyData.Version,
+			"latest_version": metadata.LatestVersion,
+		},
+	}, nil
+}
+
 // pathKeyDelete deletes a key
 func (b *PostQuantumBackend) pathKeyDelete(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
 	name := d.Get("name").(string)
-	path := fmt.Sprintf("keys/%s", name)
 
-	if err := req.Storage.Delete(ctx, path); err != nil {
+	// Delete metadata and all versions
+	metadata, err := b.getKeyMetadata(ctx, req.Storage, name)
+	if err != nil {
 		return nil, err
+	}
+
+	if metadata != nil {
+		// Delete all versions
+		for _, version := range metadata.Versions {
+			versionPath := fmt.Sprintf("keys/%s/versions/%d", name, version)
+			req.Storage.Delete(ctx, versionPath)
+		}
+		// Delete metadata
+		metadataPath := fmt.Sprintf("keys/%s/metadata", name)
+		req.Storage.Delete(ctx, metadataPath)
+	} else {
+		// Backward compatibility: delete old format
+		path := fmt.Sprintf("keys/%s", name)
+		if err := req.Storage.Delete(ctx, path); err != nil {
+			return nil, err
+		}
 	}
 
 	return nil, nil
@@ -556,18 +882,9 @@ func (b *PostQuantumBackend) pathEncrypt(ctx context.Context, req *logical.Reque
 		return nil, fmt.Errorf("invalid base64 plaintext: %w", err)
 	}
 
-	// Get the key
-	keyPath := fmt.Sprintf("keys/%s", name)
-	entry, err := req.Storage.Get(ctx, keyPath)
+	// Get the latest key version
+	keyData, err := b.getLatestKeyVersion(ctx, req.Storage, name)
 	if err != nil {
-		return nil, err
-	}
-	if entry == nil {
-		return nil, fmt.Errorf("key not found")
-	}
-
-	var keyData KeyData
-	if err := json.Unmarshal(entry.Value, &keyData); err != nil {
 		return nil, err
 	}
 
@@ -575,7 +892,7 @@ func (b *PostQuantumBackend) pathEncrypt(ctx context.Context, req *logical.Reque
 		return nil, fmt.Errorf("key is not an encryption key")
 	}
 
-	// Encrypt the data
+	// Encrypt the data using latest version
 	ciphertext, err := encryptData(plaintext, keyData.PublicKey, keyData.Algorithm)
 	if err != nil {
 		return nil, fmt.Errorf("encryption failed: %w", err)
@@ -598,42 +915,62 @@ func (b *PostQuantumBackend) pathDecrypt(ctx context.Context, req *logical.Reque
 		return nil, fmt.Errorf("invalid base64 ciphertext: %w", err)
 	}
 
-	// Get the key
-	keyPath := fmt.Sprintf("keys/%s", name)
-	entry, err := req.Storage.Get(ctx, keyPath)
-	if err != nil {
-		return nil, err
-	}
-	if entry == nil {
-		return nil, fmt.Errorf("key not found")
-	}
-
-	var keyData KeyData
-	if err := json.Unmarshal(entry.Value, &keyData); err != nil {
-		return nil, err
-	}
-
-	if keyData.KeyType != "encryption" {
-		return nil, fmt.Errorf("key is not an encryption key")
-	}
-
-	// Get and decrypt private key (handles backward compatibility)
-	privateKey, err := b.getPrivateKey(ctx, req.Storage, &keyData)
+	// Get metadata to try all versions
+	metadata, err := b.getKeyMetadata(ctx, req.Storage, name)
 	if err != nil {
 		return nil, err
 	}
 
-	// Decrypt the data
-	plaintext, err := decryptData(ciphertext, privateKey, keyData.Algorithm)
-	if err != nil {
-		return nil, fmt.Errorf("decryption failed: %w", err)
+	var versionsToTry []int
+	if metadata != nil {
+		// Try versions from latest to min_decrypt_version
+		for v := metadata.LatestVersion; v >= metadata.MinDecryptVersion; v-- {
+			versionsToTry = append(versionsToTry, v)
+		}
+	} else {
+		// Backward compatibility: try old format
+		keyData, err := b.getLatestKeyVersion(ctx, req.Storage, name)
+		if err != nil {
+			return nil, err
+		}
+		versionsToTry = []int{keyData.Version}
 	}
 
-	return &logical.Response{
-		Data: map[string]interface{}{
-			"plaintext": base64.StdEncoding.EncodeToString(plaintext),
-		},
-	}, nil
+	// Try each version until one works
+	var lastErr error
+	for _, version := range versionsToTry {
+		keyData, err := b.getKeyVersion(ctx, req.Storage, name, version)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if keyData.KeyType != "encryption" {
+			lastErr = fmt.Errorf("key is not an encryption key")
+			continue
+		}
+
+		// Get and decrypt private key
+		privateKey, err := b.getPrivateKey(ctx, req.Storage, keyData)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// Try to decrypt
+		plaintext, err := decryptData(ciphertext, privateKey, keyData.Algorithm)
+		if err == nil {
+			// Success!
+			return &logical.Response{
+				Data: map[string]interface{}{
+					"plaintext": base64.StdEncoding.EncodeToString(plaintext),
+				},
+			}, nil
+		}
+		lastErr = err
+	}
+
+	return nil, fmt.Errorf("decryption failed with all key versions: %w", lastErr)
 }
 
 // pathSign signs data
@@ -646,18 +983,9 @@ func (b *PostQuantumBackend) pathSign(ctx context.Context, req *logical.Request,
 		return nil, fmt.Errorf("invalid base64 input: %w", err)
 	}
 
-	// Get the key
-	keyPath := fmt.Sprintf("keys/%s", name)
-	entry, err := req.Storage.Get(ctx, keyPath)
+	// Get the latest key version
+	keyData, err := b.getLatestKeyVersion(ctx, req.Storage, name)
 	if err != nil {
-		return nil, err
-	}
-	if entry == nil {
-		return nil, fmt.Errorf("key not found")
-	}
-
-	var keyData KeyData
-	if err := json.Unmarshal(entry.Value, &keyData); err != nil {
 		return nil, err
 	}
 
@@ -665,8 +993,8 @@ func (b *PostQuantumBackend) pathSign(ctx context.Context, req *logical.Request,
 		return nil, fmt.Errorf("key is not a signing key")
 	}
 
-	// Get and decrypt private key (handles backward compatibility)
-	privateKey, err := b.getPrivateKey(ctx, req.Storage, &keyData)
+	// Get and decrypt private key
+	privateKey, err := b.getPrivateKey(ctx, req.Storage, keyData)
 	if err != nil {
 		return nil, err
 	}
@@ -700,36 +1028,55 @@ func (b *PostQuantumBackend) pathVerify(ctx context.Context, req *logical.Reques
 		return nil, fmt.Errorf("invalid base64 signature: %w", err)
 	}
 
-	// Get the key
-	keyPath := fmt.Sprintf("keys/%s", name)
-	entry, err := req.Storage.Get(ctx, keyPath)
+	// Get metadata to try all versions for verification
+	metadata, err := b.getKeyMetadata(ctx, req.Storage, name)
 	if err != nil {
 		return nil, err
 	}
-	if entry == nil {
-		return nil, fmt.Errorf("key not found")
+
+	var versionsToTry []int
+	if metadata != nil {
+		// Try versions from latest to min_decrypt_version
+		for v := metadata.LatestVersion; v >= metadata.MinDecryptVersion; v-- {
+			versionsToTry = append(versionsToTry, v)
+		}
+	} else {
+		// Backward compatibility: try old format
+		keyData, err := b.getLatestKeyVersion(ctx, req.Storage, name)
+		if err != nil {
+			return nil, err
+		}
+		versionsToTry = []int{keyData.Version}
 	}
 
-	var keyData KeyData
-	if err := json.Unmarshal(entry.Value, &keyData); err != nil {
-		return nil, err
+	// Try each version until one works
+	var lastErr error
+	for _, version := range versionsToTry {
+		keyData, err := b.getKeyVersion(ctx, req.Storage, name, version)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if keyData.KeyType != "signing" {
+			lastErr = fmt.Errorf("key is not a signing key")
+			continue
+		}
+
+		// Verify the signature
+		valid, err := verifySignature(input, signature, keyData.PublicKey, keyData.Algorithm)
+		if err == nil {
+			// Success!
+			return &logical.Response{
+				Data: map[string]interface{}{
+					"valid": valid,
+				},
+			}, nil
+		}
+		lastErr = err
 	}
 
-	if keyData.KeyType != "signing" {
-		return nil, fmt.Errorf("key is not a signing key")
-	}
-
-	// Verify the signature
-	valid, err := verifySignature(input, signature, keyData.PublicKey, keyData.Algorithm)
-	if err != nil {
-		return nil, fmt.Errorf("verification failed: %w", err)
-	}
-
-	return &logical.Response{
-		Data: map[string]interface{}{
-			"valid": valid,
-		},
-	}, nil
+	return nil, fmt.Errorf("verification failed with all key versions: %w", lastErr)
 }
 
 // pathDatakey generates a DEK (Data Encryption Key) and encrypts it with the specified KEK
@@ -743,19 +1090,10 @@ func (b *PostQuantumBackend) pathDatakey(ctx context.Context, req *logical.Reque
 		return nil, fmt.Errorf("bits must be 128, 256, or 512")
 	}
 
-	// Get the KEK (must be an encryption key)
-	keyPath := fmt.Sprintf("keys/%s", name)
-	entry, err := req.Storage.Get(ctx, keyPath)
+	// Get the latest KEK version (must be an encryption key)
+	keyData, err := b.getLatestKeyVersion(ctx, req.Storage, name)
 	if err != nil {
-		return nil, err
-	}
-	if entry == nil {
 		return nil, fmt.Errorf("KEK not found: %s", name)
-	}
-
-	var keyData KeyData
-	if err := json.Unmarshal(entry.Value, &keyData); err != nil {
-		return nil, err
 	}
 
 	if keyData.KeyType != "encryption" {
@@ -794,19 +1132,10 @@ func (b *PostQuantumBackend) pathRewrap(ctx context.Context, req *logical.Reques
 		return nil, fmt.Errorf("invalid base64 ciphertext: %w", err)
 	}
 
-	// Get the KEK
-	keyPath := fmt.Sprintf("keys/%s", name)
-	entry, err := req.Storage.Get(ctx, keyPath)
+	// Get the latest KEK version
+	keyData, err := b.getLatestKeyVersion(ctx, req.Storage, name)
 	if err != nil {
-		return nil, err
-	}
-	if entry == nil {
 		return nil, fmt.Errorf("KEK not found: %s", name)
-	}
-
-	var keyData KeyData
-	if err := json.Unmarshal(entry.Value, &keyData); err != nil {
-		return nil, err
 	}
 
 	if keyData.KeyType != "encryption" {
@@ -814,7 +1143,7 @@ func (b *PostQuantumBackend) pathRewrap(ctx context.Context, req *logical.Reques
 	}
 
 	// Get and decrypt private key to decrypt the DEK
-	privateKey, err := b.getPrivateKey(ctx, req.Storage, &keyData)
+	privateKey, err := b.getPrivateKey(ctx, req.Storage, keyData)
 	if err != nil {
 		return nil, err
 	}
