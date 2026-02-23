@@ -630,6 +630,14 @@ func (b *PostQuantumBackend) pathKeyCreate(ctx context.Context, req *logical.Req
 		return nil, fmt.Errorf("key already exists")
 	}
 
+	metadata, err := b.getKeyMetadata(ctx, req.Storage, name)
+	if err != nil {
+		return nil, err
+	}
+	if metadata != nil && req.Operation == logical.CreateOperation {
+		return nil, fmt.Errorf("key already exists")
+	}
+
 	// Get or create master KEK for encrypting private keys
 	kekData, err := b.getOrCreateMasterKEK(ctx, req.Storage)
 	if err != nil {

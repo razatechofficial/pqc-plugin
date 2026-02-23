@@ -12,8 +12,15 @@ import (
 // PostQuantumBackend implements the logical.Backend interface
 type PostQuantumBackend struct {
 	*framework.Backend
-	logger hclog.Logger
-	lock   sync.RWMutex
+	logger       hclog.Logger
+	controllerMu sync.RWMutex
+
+	storage          logical.Storage
+	controllerCtx    context.Context
+	controllerCancel context.CancelFunc
+	controllerWg     sync.WaitGroup
+
+	telemetry *telemetryState
 }
 
 // Factory returns a new backend as logical.Backend
@@ -29,6 +36,8 @@ func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend,
 func Backend(conf *logical.BackendConfig) *PostQuantumBackend {
 	var b PostQuantumBackend
 	b.logger = conf.Logger
+	b.storage = conf.StorageView
+	b.telemetry = newTelemetryState()
 
 	b.Backend = &framework.Backend{
 		BackendType: logical.TypeLogical,
@@ -51,7 +60,6 @@ func Backend(conf *logical.BackendConfig) *PostQuantumBackend {
 		),
 		Secrets: []*framework.Secret{},
 	}
-
 	return &b
 }
 
@@ -63,5 +71,10 @@ func (b *PostQuantumBackend) WALRollback(ctx context.Context, req *logical.Reque
 // Initialize is called when the backend is initialized
 func (b *PostQuantumBackend) Initialize(ctx context.Context, req *logical.InitializationRequest) error {
 	b.logger.Info("Initializing post-quantum backend")
+	b.startControllers()
 	return nil
+}
+
+func (b *PostQuantumBackend) controllerLock() *sync.RWMutex {
+	return &b.controllerMu
 }

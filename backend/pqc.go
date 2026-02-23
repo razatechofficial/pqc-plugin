@@ -1,15 +1,27 @@
 package backend
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/cloudflare/circl/kem"
+	"golang.org/x/crypto/hkdf"
 	"github.com/cloudflare/circl/kem/kyber/kyber1024"
 	"github.com/cloudflare/circl/kem/kyber/kyber512"
 	"github.com/cloudflare/circl/kem/kyber/kyber768"
 	"github.com/cloudflare/circl/sign/dilithium"
+)
+
+const (
+	// aeadMagic identifies AEAD ciphertext (KDF + AES-GCM). Legacy XOR ciphertext has no magic.
+	aeadMagic     = "PQ1"
+	aeadNonceSize = 12
+	aeadKeySize   = 32 // AES-256
 )
 
 // generateEncryptionKey generates a post-quantum encryption key pair
@@ -72,6 +84,52 @@ func generateSigningKey(algorithm string) ([]byte, []byte, error) {
 	return pubKeyBytes, privKeyBytes, nil
 }
 
+// aeadEncrypt encrypts plaintext with sharedSecret using HKDF-SHA256 and AES-256-GCM (production-safe).
+func aeadEncrypt(plaintext []byte, sharedSecret []byte, context string) (noncePlusCiphertext []byte, err error) {
+	key := make([]byte, aeadKeySize)
+	kdf := hkdf.New(sha256.New, sharedSecret, nil, []byte(context))
+	if _, err := io.ReadFull(kdf, key); err != nil {
+		return nil, fmt.Errorf("hkdf: %w", err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	nonce := make([]byte, aeadNonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
+	ciphertext := aead.Seal(nil, nonce, plaintext, nil)
+	return append(nonce, ciphertext...), nil
+}
+
+// aeadDecrypt decrypts noncePlusCiphertext (nonce || ciphertext+tag) with sharedSecret.
+func aeadDecrypt(noncePlusCiphertext []byte, sharedSecret []byte, context string) ([]byte, error) {
+	if len(noncePlusCiphertext) < aeadNonceSize {
+		return nil, errors.New("ciphertext too short")
+	}
+	key := make([]byte, aeadKeySize)
+	kdf := hkdf.New(sha256.New, sharedSecret, nil, []byte(context))
+	if _, err := io.ReadFull(kdf, key); err != nil {
+		return nil, fmt.Errorf("hkdf: %w", err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	nonce := noncePlusCiphertext[:aeadNonceSize]
+	ciphertext := noncePlusCiphertext[aeadNonceSize:]
+	return aead.Open(nil, nonce, ciphertext, nil)
+}
+
 // encryptData encrypts data using a post-quantum public key
 func encryptData(plaintext []byte, publicKeyBytes []byte, algorithm string) ([]byte, error) {
 	var scheme kem.Scheme
@@ -93,20 +151,18 @@ func encryptData(plaintext []byte, publicKeyBytes []byte, algorithm string) ([]b
 	}
 
 	// Encapsulate shared secret (KEM Encapsulate takes only public key)
-	ciphertext, sharedSecret, err := scheme.Encapsulate(publicKey)
+	kemCiphertext, sharedSecret, err := scheme.Encapsulate(publicKey)
 	if err != nil {
 		return nil, err
 	}
 
-	// Use shared secret to encrypt plaintext (simple XOR for demonstration)
-	// In production, use a proper AEAD like AES-GCM with the shared secret
-	encrypted := make([]byte, len(plaintext))
-	for i := range plaintext {
-		encrypted[i] = plaintext[i] ^ sharedSecret[i%len(sharedSecret)]
+	// Encrypt with HKDF + AES-256-GCM (industry standard; NIST/HPKE-style)
+	encrypted, err := aeadEncrypt(plaintext, sharedSecret, "pqc-plugin-kem-aead-v1")
+	if err != nil {
+		return nil, err
 	}
-
-	// Combine ciphertext and encrypted data
-	result := append(ciphertext, encrypted...)
+	// Wire format: KEM ciphertext || magic || nonce || AES-GCM ciphertext+tag
+	result := append(append(kemCiphertext, aeadMagic...), encrypted...)
 	return result, nil
 }
 
@@ -130,27 +186,29 @@ func decryptData(ciphertextWithData []byte, privateKeyBytes []byte, algorithm st
 		return nil, err
 	}
 
-	// Extract ciphertext and encrypted data
+	// Extract KEM ciphertext and payload
 	ciphertextSize := scheme.CiphertextSize()
 	if len(ciphertextWithData) < ciphertextSize {
 		return nil, errors.New("invalid ciphertext length")
 	}
-
-	ciphertext := ciphertextWithData[:ciphertextSize]
-	encrypted := ciphertextWithData[ciphertextSize:]
+	kemCiphertext := ciphertextWithData[:ciphertextSize]
+	payload := ciphertextWithData[ciphertextSize:]
 
 	// Decapsulate shared secret
-	sharedSecret, err := scheme.Decapsulate(privateKey, ciphertext)
+	sharedSecret, err := scheme.Decapsulate(privateKey, kemCiphertext)
 	if err != nil {
 		return nil, err
 	}
 
-	// Decrypt using shared secret
-	plaintext := make([]byte, len(encrypted))
-	for i := range encrypted {
-		plaintext[i] = encrypted[i] ^ sharedSecret[i%len(sharedSecret)]
+	// AEAD format: magic(3) || nonce(12) || ciphertext+tag; otherwise legacy XOR
+	if len(payload) >= len(aeadMagic) && string(payload[:len(aeadMagic)]) == aeadMagic {
+		return aeadDecrypt(payload[len(aeadMagic):], sharedSecret, "pqc-plugin-kem-aead-v1")
 	}
-
+	// Legacy XOR (backward compatibility)
+	plaintext := make([]byte, len(payload))
+	for i := range payload {
+		plaintext[i] = payload[i] ^ sharedSecret[i%len(sharedSecret)]
+	}
 	return plaintext, nil
 }
 
@@ -239,19 +297,17 @@ func encryptPrivateKeyWithKEK(privateKey []byte, kekPublicKey []byte) ([]byte, e
 	}
 
 	// Encapsulate shared secret using KEK
-	ciphertext, sharedSecret, err := scheme.Encapsulate(kekPubKey)
+	kemCiphertext, sharedSecret, err := scheme.Encapsulate(kekPubKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encapsulate with KEK: %w", err)
 	}
 
-	// Encrypt private key with shared secret (XOR for simplicity, can be enhanced with AEAD)
-	encrypted := make([]byte, len(privateKey))
-	for i := range privateKey {
-		encrypted[i] = privateKey[i] ^ sharedSecret[i%len(sharedSecret)]
+	// Encrypt with HKDF + AES-256-GCM (production-safe)
+	encrypted, err := aeadEncrypt(privateKey, sharedSecret, "pqc-plugin-kek-aead-v1")
+	if err != nil {
+		return nil, err
 	}
-
-	// Combine KEM ciphertext and encrypted private key
-	result := append(ciphertext, encrypted...)
+	result := append(append(kemCiphertext, aeadMagic...), encrypted...)
 	return result, nil
 }
 
@@ -265,26 +321,28 @@ func decryptPrivateKeyWithKEK(encryptedPrivateKey []byte, kekPrivateKey []byte) 
 		return nil, fmt.Errorf("failed to unmarshal KEK private key: %w", err)
 	}
 
-	// Extract KEM ciphertext and encrypted private key
+	// Extract KEM ciphertext and payload
 	ciphertextSize := scheme.CiphertextSize()
 	if len(encryptedPrivateKey) < ciphertextSize {
 		return nil, errors.New("invalid encrypted private key length")
 	}
-
-	ciphertext := encryptedPrivateKey[:ciphertextSize]
-	encrypted := encryptedPrivateKey[ciphertextSize:]
+	kemCiphertext := encryptedPrivateKey[:ciphertextSize]
+	payload := encryptedPrivateKey[ciphertextSize:]
 
 	// Decapsulate shared secret
-	sharedSecret, err := scheme.Decapsulate(kekPrivKey, ciphertext)
+	sharedSecret, err := scheme.Decapsulate(kekPrivKey, kemCiphertext)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decapsulate with KEK: %w", err)
 	}
 
-	// Decrypt private key
-	privateKey := make([]byte, len(encrypted))
-	for i := range encrypted {
-		privateKey[i] = encrypted[i] ^ sharedSecret[i%len(sharedSecret)]
+	// AEAD format: magic(3) || nonce(12) || ciphertext+tag; otherwise legacy XOR
+	if len(payload) >= len(aeadMagic) && string(payload[:len(aeadMagic)]) == aeadMagic {
+		return aeadDecrypt(payload[len(aeadMagic):], sharedSecret, "pqc-plugin-kek-aead-v1")
 	}
-
+	// Legacy XOR (backward compatibility)
+	privateKey := make([]byte, len(payload))
+	for i := range payload {
+		privateKey[i] = payload[i] ^ sharedSecret[i%len(sharedSecret)]
+	}
 	return privateKey, nil
 }
